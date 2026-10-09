@@ -1,0 +1,279 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Criar projeto
+        run: |
+          cat > settings.gradle.kts <<'EOF_AUX'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "AuxilioFF"
+          include(":app")
+          EOF_AUX
+          cat > build.gradle.kts <<'EOF_AUX'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_AUX
+          mkdir -p app
+          cat > app/build.gradle.kts <<'EOF_AUX'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.auxilioff"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.auxilioff"
+                  minSdk = 30
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "1.1"
+                  resourceConfigurations += listOf("pt")
+              }
+              buildTypes {
+                  release {
+                      isMinifyEnabled = true
+                      isShrinkResources = true
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                      signingConfig = signingConfigs.getByName("debug")
+                  }
+              }
+              compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("dev.rikka.shizuku:api:13.1.5")
+              implementation("dev.rikka.shizuku:provider:13.1.5")
+          }
+          EOF_AUX
+          cat > app/proguard-rules.pro <<'EOF_AUX'
+          -keep class rikka.shizuku.** { *; }
+          -keep class com.auxilioff.** { *; }
+          -dontwarn rikka.**
+          EOF_AUX
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_AUX'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+              </queries>
+              <application android:label="Auxílio FF" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <provider android:name="rikka.shizuku.ShizukuProvider"
+                      android:authorities="${applicationId}.shizuku"
+                      android:exported="true" android:multiprocess="false"
+                      android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+              </application>
+          </manifest>
+          EOF_AUX
+          mkdir -p app/src/main/java/com/auxilioff
+          cat > app/src/main/java/com/auxilioff/Shell.kt <<'EOF_AUX'
+          package com.auxilioff
+
+          import android.content.pm.PackageManager
+          import rikka.shizuku.Shizuku
+
+          object Shell {
+              fun running() = try { Shizuku.pingBinder() } catch (e: Throwable) { false }
+              fun granted() = try { running() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (e: Throwable) { false }
+              fun request() { try { Shizuku.requestPermission(100) } catch (_: Throwable) {} }
+
+              fun run(cmd: String): String {
+                  if (!granted()) return "Erro: sem permissão"
+                  return try {
+                      val m = Shizuku::class.java.getDeclaredMethod("newProcess",
+                          Array<String>::class.java, Array<String>::class.java, String::class.java)
+                      m.isAccessible = true
+                      val p = m.invoke(null, arrayOf("sh", "-c", cmd), null, null) as Process
+                      val out = p.inputStream.bufferedReader().readText() + p.errorStream.bufferedReader().readText()
+                      p.waitFor()
+                      out.trim().ifEmpty { "OK" }
+                  } catch (e: Throwable) { "Erro: ${e.message}" }
+              }
+          }
+          EOF_AUX
+          cat > app/src/main/java/com/auxilioff/MainActivity.kt <<'EOF_AUX'
+          package com.auxilioff
+
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.view.ViewGroup
+          import android.widget.*
+
+          class Tweak(val title: String, val on: List<String>, val off: List<String>)
+
+          class MainActivity : Activity() {
+              private val games = listOf("com.dts.freefireth", "com.dts.freefiremax")
+              private val anim = listOf("window_animation_scale", "transition_animation_scale", "animator_duration_scale")
+              private lateinit var status: TextView
+              private lateinit var root: LinearLayout
+              private val prefs by lazy { getSharedPreferences("boost", Context.MODE_PRIVATE) }
+
+              private fun tweaks() = listOf(
+                  Tweak("Animações 0,5x", anim.map { "settings put global $it 0.5" }, anim.map { "settings put global $it 1.0" }),
+                  Tweak("Tela fixa em 120 Hz",
+                      listOf("settings put system peak_refresh_rate 120.0", "settings put system min_refresh_rate 120.0"),
+                      listOf("settings delete system min_refresh_rate")),
+                  Tweak("DNS privado (Google)",
+                      listOf("settings put global private_dns_mode hostname", "settings put global private_dns_specifier dns.google"),
+                      listOf("settings put global private_dns_mode opportunistic")),
+                  Tweak("Wi-Fi baixa latência",
+                      listOf("cmd wifi force-low-latency-mode enabled", "cmd wifi force-hi-perf-mode enabled"),
+                      listOf("cmd wifi force-low-latency-mode disabled", "cmd wifi force-hi-perf-mode disabled")),
+                  Tweak("Modo Jogo: Desempenho", games.map { "cmd game mode performance $it" }, games.map { "cmd game mode standard $it" }),
+                  Tweak("Free Fire sem economia de bateria", games.map { "cmd deviceidle whitelist +$it" }, games.map { "cmd deviceidle whitelist -$it" }),
+                  Tweak("Desligar bateria adaptável",
+                      listOf("settings put global adaptive_battery_management_enabled 0"),
+                      listOf("settings put global adaptive_battery_management_enabled 1")),
+                  Tweak("Não perturbe", listOf("cmd notification set_dnd priority"), listOf("cmd notification set_dnd off")),
+                  Tweak("Menos buscas de Wi-Fi",
+                      listOf("settings put global wifi_scan_always_enabled 0", "settings put global ble_scan_always_enabled 0"),
+                      listOf("settings put global wifi_scan_always_enabled 1", "settings put global ble_scan_always_enabled 1"))
+              )
+
+              private val recommended = setOf("Animações 0,5x", "Tela fixa em 120 Hz", "DNS privado (Google)", "Wi-Fi baixa latência",
+                  "Modo Jogo: Desempenho", "Free Fire sem economia de bateria", "Não perturbe", "Menos buscas de Wi-Fi")
+
+              override fun onCreate(b: Bundle?) {
+                  super.onCreate(b)
+                  val scroll = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#101114")) }
+                  root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 96, 48, 72) }
+                  scroll.addView(root)
+                  setContentView(scroll)
+                  build()
+              }
+
+              override fun onResume() { super.onResume(); refreshStatus() }
+
+              private fun hib() = prefs.getStringSet("hib", emptySet())!!
+
+              private fun build() {
+                  root.addView(label("Auxílio FF", 26f, Color.WHITE))
+                  root.addView(label("Otimização do sistema. Não altera o jogo nem a mira.", 13f, Color.GRAY))
+                  status = label("", 14f, Color.YELLOW)
+                  root.addView(status)
+                  root.addView(button("Conceder permissão Shizuku") { Shell.request(); refreshStatus() })
+                  root.addView(button("🚀 MODO JOGO (recomendado + hibernar apps)") { gameMode() })
+                  root.addView(button("Limpar RAM") { run("Limpar RAM", listOf("am kill-all")) })
+                  root.addView(button("Limpar caches") { run("Limpar caches", listOf("pm trim-caches 4G")) })
+                  root.addView(button("↩ Restaurar tudo") { restoreAll() })
+
+                  root.addView(label("Otimizações", 18f, Color.parseColor("#FF8A3D")))
+                  tweaks().forEach { t ->
+                      root.addView(Switch(this).apply {
+                          text = t.title; setTextColor(Color.WHITE); setPadding(0, 24, 0, 24)
+                          isChecked = prefs.getBoolean(t.title, false)
+                          setOnCheckedChangeListener { _, on ->
+                              prefs.edit().putBoolean(t.title, on).apply()
+                              run(t.title, if (on) t.on else t.off)
+                          }
+                      })
+                  }
+
+                  root.addView(label("Hibernar apps (estilo Brevent)", 18f, Color.parseColor("#FF8A3D")))
+                  val selected = hib().toMutableSet()
+                  val holder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  root.addView(holder)
+                  Thread {
+                      val pm = packageManager
+                      val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                          .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                          .distinctBy { it.first }
+                          .filter { it.first != packageName && it.first !in games }
+                          .sortedBy { it.second.lowercase() }
+                      runOnUiThread {
+                          apps.forEach { (pkg, name) ->
+                              holder.addView(CheckBox(this).apply {
+                                  text = name; setTextColor(Color.WHITE); isChecked = pkg in selected
+                                  setOnCheckedChangeListener { _, c ->
+                                      if (c) selected.add(pkg) else selected.remove(pkg)
+                                      prefs.edit().putStringSet("hib", selected.toSet()).apply()
+                                  }
+                              })
+                          }
+                      }
+                  }.start()
+                  root.addView(button("Hibernar selecionados agora") { run("Hibernar", sleepCmds()) })
+                  root.addView(button("Liberar apps hibernados") { run("Liberar", wakeCmds()) })
+              }
+
+              private fun sleepCmds() = hib().flatMap { listOf("cmd appops set $it RUN_IN_BACKGROUND ignore", "am force-stop $it") }
+              private fun wakeCmds() = hib().map { "cmd appops set $it RUN_IN_BACKGROUND allow" }
+
+              private fun gameMode() {
+                  val on = tweaks().filter { it.title in recommended }
+                  on.forEach { prefs.edit().putBoolean(it.title, true).apply() }
+                  run("Modo Jogo", on.flatMap { it.on } + sleepCmds() + "am kill-all")
+                  refreshUi()
+              }
+
+              private fun restoreAll() {
+                  tweaks().forEach { prefs.edit().putBoolean(it.title, false).apply() }
+                  run("Restaurar", tweaks().flatMap { it.off } + wakeCmds())
+                  refreshUi()
+              }
+
+              private fun refreshUi() { root.removeAllViews(); build(); refreshStatus() }
+
+              private fun run(name: String, cmds: List<String>) {
+                  if (!Shell.granted()) { toast("Ative o Shizuku e conceda a permissão"); return }
+                  Thread {
+                      val bad = cmds.map { Shell.run(it) }.count { it.startsWith("Erro") }
+                      runOnUiThread { toast(if (bad == 0) "$name: aplicado ✔" else "$name: $bad falha(s)") }
+                  }.start()
+              }
+
+              private fun refreshStatus() {
+                  status.text = when {
+                      !Shell.running() -> "⚠ Shizuku não está em execução."
+                      !Shell.granted() -> "⚠ Falta conceder permissão."
+                      else -> "✔ Shizuku ativo e autorizado"
+                  }
+              }
+
+              private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+              private fun label(t: String, size: Float, color: Int) = TextView(this).apply {
+                  text = t; textSize = size; setTextColor(color); setPadding(0, 24, 0, 12)
+              }
+              private fun button(t: String, click: () -> Unit) = Button(this).apply {
+                  text = t; isAllCaps = false; setOnClickListener { click() }
+                  layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+              }
+          }
+          EOF_AUX
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - run: gradle assembleRelease
+      - run: cp app/build/outputs/apk/release/*.apk AuxilioFF.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Auxílio FF v${{ github.run_number }}
+          files: AuxilioFF.apk
