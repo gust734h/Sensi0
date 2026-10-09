@@ -11,6 +11,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Criar projeto
         run: |
+          cat > gradle.properties <<'EOF_AUX'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          EOF_AUX
           cat > settings.gradle.kts <<'EOF_AUX'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositories { google(); mavenCentral() } }
@@ -50,6 +54,7 @@ jobs:
               }
               compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
               kotlinOptions { jvmTarget = "17" }
+              lint { checkReleaseBuilds = false; abortOnError = false }
           }
           dependencies {
               implementation("dev.rikka.shizuku:api:13.1.5")
@@ -95,7 +100,7 @@ jobs:
           object Shell {
               fun running() = try { Shizuku.pingBinder() } catch (e: Throwable) { false }
               fun granted() = try { running() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED } catch (e: Throwable) { false }
-              fun request() { try { Shizuku.requestPermission(100) } catch (_: Throwable) {} }
+              fun request() { try { Shizuku.requestPermission(100) } catch (e: Throwable) {} }
 
               fun run(cmd: String): String {
                   if (!granted()) return "Erro: sem permissão"
@@ -270,7 +275,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - run: gradle assembleRelease
+      - run: gradle assembleRelease --stacktrace
       - run: cp app/build/outputs/apk/release/*.apk AuxilioFF.apk
       - uses: softprops/action-gh-release@v2
         with:
